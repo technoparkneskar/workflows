@@ -1,0 +1,80 @@
+name: Build & Push Docker Image to container image registry
+
+on:
+  workflow_call:
+    inputs:
+      ADD_FLAVOR:
+        description: "Whether to add flavor (only -dev atm) to the image tag"
+        type: boolean
+        required: false
+        default: true
+      NO_CACHE:
+        description: "Whether to use build cache"
+        type: boolean
+        required: false
+        default: false
+    secrets:
+      BOT_TOKEN:
+        required: true
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check Out Repo
+        uses: actions/checkout@2541b1294d2704b0964813337f33b291d3f8596b # tag=v3.0.2
+
+      #- name: Set up QEMU (We don't need QEMU, because we don't build images for platforms other than linux/amd64, which is our current native arch in our infra
+      #  uses: docker/setup-qemu-action@v1.2.0
+
+      - name: Set up Docker Buildx
+        id: buildx
+        uses: docker/setup-buildx-action@dc7b9719a96d48369863986a06765841d7ea23f6 # tag=v2.0.0
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@49ed152c8eca782a232dede0303416e8f356c37b # tag=v2.0.0
+        if: ${{ github.event_name != 'pull_request' }}
+        with:
+          registry: ghcr.io
+          username: technoparkn
+          password: ${{ secrets.BOT_TOKEN }}
+
+      - name: Extract tag name
+        id: tags
+        if: ${{ github.event_name == 'release' }}
+        run: echo ::set-output name=name::${GITHUB_REF##*/}
+
+      - name: Extract flavor
+        id: flavor
+        if: ${{ inputs.ADD_FLAVOR == true }}
+        run: if [ "${{ github.event_name }}" = "release" ]; then echo ::set-output name=name::; else echo ::set-output name=name::-dev; fi
+
+      - name: Generate Docker image metadata
+        uses: docker/metadata-action@69f6fc9d46f2f8bf0d5491e4aabe0bb8c6a4678a # tag=v4.0.1
+        id: img_meta
+        with:
+          flavor: |
+            latest=auto
+            suffix=${{ steps.flavor.outputs.name }}
+          images: ghcr.io/${{ github.repository }}
+          tags: |
+            ${{ steps.tags.outputs.name }}
+            latest
+      - name: Build and push
+        id: docker_build
+        uses: docker/build-push-action@c84f38281176d4c9cdb1626ffafcd6b3911b5d94 # tag=v3.1.1
+        with:
+          context: ./
+          tags: ${{ steps.img_meta.outputs.tags }}
+          labels: ${{ steps.img_meta.outputs.labels }}
+          push: ${{ github.event_name != 'pull_request' }}
+          secrets: |
+            "GH_PKG_AUTH_TOKEN=${{ secrets.BOT_TOKEN }}"
+            "GITHUB_TOKEN=${{ secrets.BOT_TOKEN }}"
+          cache-from: type=gha,mode=max
+          cache-to: type=gha,mode=max
+          no-cache: ${{ inputs.NO_CACHE == true }}
